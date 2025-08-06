@@ -3,6 +3,7 @@ syntax = "proto3";
 package driver;
 
 option go_package = "shared/proto/driver;driver";
+
 service DriverService {
   rpc RegisterDriver(RegisterDriverRequest) returns (RegisterDriverResponse);
   rpc UnregisterDriver(RegisterDriverRequest) returns (RegisterDriverResponse);
@@ -31,4 +32,3 @@ message Location {
   double latitude = 1;
   double longitude = 2;
 }
-
