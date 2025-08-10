@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"ride-sharing/shared/env"
 	"ride-sharing/shared/messaging"
+	"ride-sharing/shared/tracing"
 	"syscall"
 
 	grpcserver "google.golang.org/grpc"
@@ -15,11 +16,24 @@ import (
 
 var GrpcAddr = ":9092"
 
-var rabbitUri = env.GetString("RABBITMQ_URI", "amqp://guest:guest@rabbitmq:5672/")
-
 func main() {
+	// Initialize Tracing
+	tracerCfg := tracing.Config{
+		ServiceName:    "driver-service",
+		Environment:    env.GetString("ENVIRONMENT", "development"),
+		JaegerEndpoint: env.GetString("JAEGER_ENDPOINT", "http://jaeger:14268/api/traces"),
+	}
+
+	sh, err := tracing.InitTracer(tracerCfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize the tracer: %v", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	defer sh(ctx)
+
+	rabbitMqURI := env.GetString("RABBITMQ_URI", "amqp://guest:guest@rabbitmq:5672/")
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
@@ -28,13 +42,6 @@ func main() {
 		cancel()
 	}()
 
-	// RabbitMq connection
-	rabbitmq, err := messaging.NewRabbitMQ(rabbitUri)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer rabbitmq.Close()
-
 	lis, err := net.Listen("tcp", GrpcAddr)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -42,11 +49,20 @@ func main() {
 
 	svc := NewService()
 
-	// Starting the gRPC server
-	grpcServer := grpcserver.NewServer()
-	NewGrpcHandler(grpcServer, svc)
-	consumer := NewTripConsumer(rabbitmq)
+	// RabbitMQ connection
+	rabbitmq, err := messaging.NewRabbitMQ(rabbitMqURI)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rabbitmq.Close()
 
+	log.Println("Starting RabbitMQ connection")
+
+	// Starting the gRPC server
+	grpcServer := grpcserver.NewServer(tracing.WithTracingInterceptors()...)
+	NewGrpcHandler(grpcServer, svc)
+
+	consumer := NewTripConsumer(rabbitmq, svc)
 	go func() {
 		if err := consumer.Listen(); err != nil {
 			log.Fatalf("Failed to listen to the message: %v", err)
